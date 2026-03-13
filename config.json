@@ -1,0 +1,27 @@
+{
+  "logging": {
+    "enabled": true,
+    "path": "/var/log/fw-fanctl/sensor-log.json",
+    "maxSizeMB": 50,
+    "flushIntervalSeconds": 120
+  },
+  "updateInterval": 2,
+  "setpoint": 75,
+  "Kp": 0.25,
+  "Ki": 0.021,
+  "pl1MinW": 5,
+  "pl1MaxW": 28,
+  "integralMaxW": 250,
+  "rampUpRateLimitW": 3,
+  "rampDownRateLimitW": 3,
+  "sensorSmoothing": 5,
+  "sen5GuardTemp": 75,
+  "sen5CriticalTemp": 78,
+  "sen5ReleaseTemp": 73,
+  "sen5CutRateW": 2,
+  "idleCeilingW": 15,
+  "idleTempC": 65,
+  "idleReleaseTempC": 68,
+  "idleEPP": "power",
+  "normalEPP": "balance_performance"
+}

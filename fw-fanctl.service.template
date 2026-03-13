@@ -1,0 +1,53 @@
+# Substituted by install.sh:
+#   @LIB_DIR@    → /usr/local/lib/fw-fanctl  (daemon install path)
+#   @CONF_DIR@   → /etc/fw-fanctl            (config install path)
+#   @ECTOOL@     → /usr/local/bin/ectool     (ectool binary path)
+#
+# Everything else can be customized freely. Edit this file before running
+# install.sh, or edit the installed copy at /etc/systemd/system/fw-fanctl.service
+# and run: sudo systemctl daemon-reload
+
+[Unit]
+Description=fw-fanctl — PL1 thermal control daemon for Framework laptops
+After=multi-user.target systemd-modules-load.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+# Adjust the python3 path if your distro uses a different location (e.g. NixOS)
+ExecStart=/usr/bin/python3 @LIB_DIR@/fw_fanctl.py --config @CONF_DIR@/config.json
+# Safety net: restore PL1 and EC auto fan even after SIGKILL/OOM.
+# PL1 restore: 28W is the firmware max — ensures the CPU isn't stuck throttled
+# if the daemon was killed while PL1 was at minimum (5W).
+# Fan restore: fanduty 1 before autofanctrl works around EC firmware bug where
+# autofanctrl alone cannot re-enable the PWM hardware after fanduty 0.
+ExecStopPost=/bin/sh -c 'echo 28000000 > /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw 2>&1; @ECTOOL@ fanduty 1 2>&1; @ECTOOL@ autofanctrl 2>&1; true'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+OOMScoreAdjust=-900
+NoNewPrivileges=yes
+ProtectSystem=strict
+# ProtectSystem=strict makes / read-only but does not affect /sys or /proc.
+# The daemon writes to /sys/class/powercap (RAPL PL1) and
+# /sys/devices/system/cpu (EPP) — these work without ReadWritePaths.
+ReadWritePaths=/var/log/fw-fanctl
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+PrivateTmp=yes
+# All I/O is local (sysfs, ectool over LPC bus, sensors reading /sys)
+PrivateNetwork=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
