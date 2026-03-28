@@ -192,7 +192,7 @@ fi
 # --- ectool ---
 echo "ectool:"
 if [ -x "$ECTOOL" ]; then
-    ec_ver=$("$ECTOOL" version 2>/dev/null | head -1) || true
+    ec_ver=$("$ECTOOL" --interface=dev version 2>/dev/null | head -1) || true
     if [ -n "$ec_ver" ]; then
         ok "ectool works ($ec_ver)"
     else
@@ -203,7 +203,7 @@ fi
 # --- Fan RPM ---
 echo "Fan:"
 if [ -x "$ECTOOL" ]; then
-    rpm=$("$ECTOOL" pwmgetfanrpm 2>/dev/null | sed -n 's/.*RPM:[[:space:]]*\([0-9]*\).*/\1/p') || true
+    rpm=$("$ECTOOL" --interface=dev pwmgetfanrpm 2>/dev/null | sed -n 's/.*RPM:[[:space:]]*\([0-9]*\).*/\1/p') || true
     if [ -n "$rpm" ]; then
         ok "fan: ${rpm} RPM"
     else

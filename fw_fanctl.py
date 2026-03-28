@@ -22,6 +22,7 @@ from pathlib import Path
 __version__ = "1.0.0"
 
 ECTOOL = "/usr/local/bin/ectool"
+ECTOOL_CMD = (ECTOOL, "--interface=dev")
 CRITICAL_TEMP = 95  # °C — force PL1 to minimum when exceeded
 CRITICAL_COUNT = 3  # consecutive readings above CRITICAL_TEMP before override fires
 SANE_TEMP_MIN = 5
@@ -209,7 +210,7 @@ class Hardware:
             return True
         try:
             subprocess.run(
-                [ECTOOL, "fanduty", str(pct)],
+                [*ECTOOL_CMD, "fanduty", str(pct)],
                 check=True, capture_output=True, timeout=5,
             )
             return True
@@ -228,14 +229,14 @@ class Hardware:
             return
         try:
             subprocess.run(
-                [ECTOOL, "fanduty", "1"],
+                [*ECTOOL_CMD, "fanduty", "1"],
                 check=True, capture_output=True, timeout=5,
             )
         except (subprocess.SubprocessError, OSError):
             pass  # best-effort, autofanctrl below is the real goal
         try:
             subprocess.run(
-                [ECTOOL, "autofanctrl"],
+                [*ECTOOL_CMD, "autofanctrl"],
                 check=True, capture_output=True, timeout=5,
             )
         except (subprocess.SubprocessError, OSError) as e:
@@ -246,7 +247,7 @@ class Hardware:
         """Read current fan RPM via ectool. Returns int or None on failure."""
         try:
             result = subprocess.run(
-                [ECTOOL, "pwmgetfanrpm"],
+                [*ECTOOL_CMD, "pwmgetfanrpm"],
                 capture_output=True, text=True, timeout=5,
             )
             for line in result.stdout.splitlines():
@@ -267,7 +268,7 @@ class Hardware:
             return []
         try:
             result = subprocess.run(
-                [ECTOOL, "thermalget"],
+                [*ECTOOL_CMD, "thermalget"],
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode != 0:
@@ -326,7 +327,7 @@ class Hardware:
             return True
         try:
             subprocess.run(
-                [ECTOOL, "thermalset", str(sensor_id),
+                [*ECTOOL_CMD, "thermalset", str(sensor_id),
                  str(warn), str(high), str(halt), str(fan_off), str(fan_max)],
                 check=True, capture_output=True, timeout=5,
             )
@@ -342,7 +343,7 @@ class Hardware:
             return True
         try:
             subprocess.run(
-                [ECTOOL, "version"],
+                [*ECTOOL_CMD, "version"],
                 check=True, capture_output=True, timeout=5,
             )
             return True

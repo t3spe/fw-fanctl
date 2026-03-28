@@ -22,7 +22,7 @@ ExecStart=/usr/bin/python3 @LIB_DIR@/fw_fanctl.py --config @CONF_DIR@/config.jso
 # if the daemon was killed while PL1 was at minimum (5W).
 # Fan restore: fanduty 1 before autofanctrl works around EC firmware bug where
 # autofanctrl alone cannot re-enable the PWM hardware after fanduty 0.
-ExecStopPost=/bin/sh -c 'echo 28000000 > /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw 2>&1; @ECTOOL@ fanduty 1 2>&1; @ECTOOL@ autofanctrl 2>&1; true'
+ExecStopPost=/bin/sh -c 'echo 28000000 > /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw 2>&1; @ECTOOL@ --interface=dev fanduty 1 2>&1; @ECTOOL@ --interface=dev autofanctrl 2>&1; true'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
@@ -33,11 +33,18 @@ ProtectSystem=strict
 # The daemon writes to /sys/class/powercap (RAPL PL1) and
 # /sys/devices/system/cpu (EPP) — these work without ReadWritePaths.
 ReadWritePaths=/var/log/fw-fanctl
+# ectool needs /run/lock/cros_ec_lock for EC mutual exclusion.
+# /run/lock is a separate tmpfs that ProtectSystem=strict makes read-only
+# and ReadWritePaths/BindPaths cannot remount. Overlay a private writable
+# tmpfs so ectool can create its lockfile. The lock is service-private —
+# acceptable since the daemon is the only continuous ectool user.
+TemporaryFileSystem=/run/lock:mode=1777
 ProtectHome=yes
 ProtectControlGroups=yes
 ProtectKernelModules=yes
 ProtectHostname=yes
-ProtectClock=yes
+# ProtectClock=yes breaks ectool — it restricts the device cgroup, blocking
+# /dev/cros_ec access. The daemon doesn't touch the clock anyway.
 ProtectKernelLogs=yes
 PrivateTmp=yes
 # All I/O is local (sysfs, ectool over LPC bus, sensors reading /sys)
