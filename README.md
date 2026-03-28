@@ -173,6 +173,8 @@ Generates a 5-panel PNG chart from sensor logs:
 
 Panels: Fan RPM, CPU temperature, PL1 power, board sensors, system load.
 
+<img src="doc/sensor-plot-example.png" alt="sensor-plot example — 12h with 5m rolling average" width="700">
+
 Options:
 
     -o, --output FILE    Save to FILE (default: /tmp/sensor-plot-{hours}h.png)
