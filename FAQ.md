@@ -391,16 +391,26 @@ its default thermal tables, PL1 returns to firmware default (28W) on reboot.
 ### How do I manage sensor log disk usage?
 
 The daemon rotates `sensor-log.json` when it exceeds `logging.maxSizeMB`
-(default 50MB), creating timestamped files like `sensor-log.20260308_143012_654321.json`.
-Old rotated files are **not** automatically deleted.
+(default 50MB), creating gzip-compressed files like
+`sensor-log.20260308_143012_654321.json.gz` (~98% compression).
+A metadata index (`sensor-log-meta.json`) tracks the time range of each file.
+
+Old files are automatically deleted when the count exceeds `logging.maxLogFiles`
+(default 100, not counting the active log). Retention depends on entry size and
+update interval — typically several weeks at default settings.
+
+The metadata index (`sensor-log-meta.json`) is safe to delete — it is recreated
+on the next rotation and `sensor-plot.sh` works without it.
 
 To clean up manually:
 
-    sudo rm /var/log/fw-fanctl/sensor-log.2*.json
+    sudo rm -f /var/log/fw-fanctl/sensor-log.2*.json.gz
+    sudo rm -f /var/log/fw-fanctl/sensor-log-meta.json
 
 To automate with a cron job (keeps the last 7 days):
 
-    sudo find /var/log/fw-fanctl -name 'sensor-log.2*.json' -mtime +7 -delete
+    sudo find /var/log/fw-fanctl -name 'sensor-log.2*.json.gz' -mtime +7 -delete
+    # The metadata index is recreated on the next rotation if missing.
 
 To disable logging entirely, set `logging.enabled` to `false` in
 `/etc/fw-fanctl/config.json` and restart the service.

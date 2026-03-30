@@ -345,17 +345,31 @@ with tempfile.TemporaryDirectory() as td:
 
 # ── 8. Rotation ───────────────────────────────────────────────────────
 
+import gzip as _gzip
+import threading as _threading
+
+def _wait_for_compression(td, timeout=5):
+    """Wait for background compression thread(s) to finish."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        alive = [t for t in _threading.enumerate()
+                 if t.name.startswith("fw-fanctl-compress")]
+        if not alive:
+            break
+        time.sleep(0.05)
+
 print("\n── rotation ──")
 
 with tempfile.TemporaryDirectory() as td:
-    path = os.path.join(td, "log.json")
+    path = os.path.join(td, "sensor-log.json")
     sl = SensorLogger({"enabled": True, "path": path,
                         "maxSizeMB": 0.001,  # ~1KB
                         "flushIntervalSeconds": 9999})
 
-    # Write enough to exceed 1KB
+    # Write enough to exceed 1KB (with timestamps for metadata)
     for i in range(20):
-        sl._buffer.append(json.dumps({"i": i, "pad": "x" * 100}))
+        sl._buffer.append(json.dumps({"i": i, "pad": "x" * 100,
+                                       "timestamp": f"2026-01-01T00:{i:02d}:00-07:00"}))
     sl.flush()
     check("initial file exists", os.path.exists(path))
     size1 = os.path.getsize(path)
@@ -363,22 +377,63 @@ with tempfile.TemporaryDirectory() as td:
 
     # Next flush should rotate
     for i in range(5):
-        sl._buffer.append(json.dumps({"i": 100 + i}))
+        sl._buffer.append(json.dumps({"i": 100 + i,
+                                       "timestamp": f"2026-01-01T01:{i:02d}:00-07:00"}))
     sl.flush()
+    _wait_for_compression(td)
 
     files = sorted(os.listdir(td))
-    check("rotation created 2 files", len(files) == 2, f"got {files}")
-    rotated = [f for f in files if f != "log.json"]
-    check("rotated file has timestamp", len(rotated) == 1 and "log." in rotated[0])
+    rotated_gz = [f for f in files if f.endswith(".json.gz")]
+    check("rotated file is gzipped", len(rotated_gz) == 1, f"got {files}")
+    check("active + rotated + meta = 3 files",
+          len(files) == 3, f"got {files}")
 
     with open(path) as f:
         new_lines = [json.loads(l) for l in f.read().strip().split("\n") if l]
     check("new file has 5 entries", len(new_lines) == 5, f"got {len(new_lines)}")
     check("new file starts at i=100", new_lines[0]["i"] == 100)
 
-    with open(os.path.join(td, rotated[0])) as f:
+    with _gzip.open(os.path.join(td, rotated_gz[0]), "rt") as f:
         old_lines = [json.loads(l) for l in f.read().strip().split("\n") if l]
-    check("rotated file has 20 entries", len(old_lines) == 20, f"got {len(old_lines)}")
+    check("rotated gzip has 20 entries", len(old_lines) == 20, f"got {len(old_lines)}")
+
+    # Verify metadata
+    meta_path = os.path.join(td, "sensor-log-meta.json")
+    check("metadata file exists", os.path.exists(meta_path))
+    with open(meta_path) as f:
+        meta = json.load(f)
+    check("metadata has 1 entry", len(meta) == 1, f"got {len(meta)}")
+    check("metadata file field matches", meta[0]["file"] == rotated_gz[0])
+    check("metadata has start timestamp", meta[0]["start"] == "2026-01-01T00:00:00-07:00",
+          f"got {meta[0]['start']}")
+    check("metadata has end timestamp", meta[0]["end"] == "2026-01-01T00:19:00-07:00",
+          f"got {meta[0]['end']}")
+
+print("\n── rotation: max file pruning ──")
+
+with tempfile.TemporaryDirectory() as td:
+    path = os.path.join(td, "sensor-log.json")
+    sl = SensorLogger({"enabled": True, "path": path,
+                        "maxSizeMB": 0.001,
+                        "maxLogFiles": 2,
+                        "flushIntervalSeconds": 9999})
+
+    # Create 3 rotations (exceeds maxLogFiles=2)
+    for rotation in range(3):
+        for i in range(20):
+            sl._buffer.append(json.dumps({"r": rotation, "i": i, "pad": "x" * 100,
+                                           "timestamp": f"2026-01-0{rotation+1}T00:{i:02d}:00-07:00"}))
+        sl.flush()
+        _wait_for_compression(td)
+        time.sleep(0.01)  # ensure unique timestamps in filenames
+
+    gz_files = sorted(f for f in os.listdir(td) if f.endswith(".json.gz"))
+    check("pruned to max 2 rotated files", len(gz_files) == 2, f"got {gz_files}")
+
+    meta_path = os.path.join(td, "sensor-log-meta.json")
+    with open(meta_path) as f:
+        meta = json.load(f)
+    check("metadata pruned to 2 entries", len(meta) == 2, f"got {len(meta)}")
 
 # ── 9. Buffer cap ─────────────────────────────────────────────────────
 
@@ -654,6 +709,10 @@ invalid("maxSizeMB negative", {"maxSizeMB": -5}, "must be > 0")
 invalid("maxSizeMB string", {"maxSizeMB": "big"}, "must be > 0")
 invalid("flushInterval zero", {"flushIntervalSeconds": 0}, "must be > 0")
 invalid("flushInterval negative", {"flushIntervalSeconds": -1}, "must be > 0")
+invalid("maxLogFiles zero", {"maxLogFiles": 0}, "positive integer")
+invalid("maxLogFiles negative", {"maxLogFiles": -1}, "positive integer")
+invalid("maxLogFiles float", {"maxLogFiles": 2.5}, "positive integer")
+invalid("maxLogFiles string", {"maxLogFiles": "many"}, "positive integer")
 
 try:
     validate_config(base_cfg)

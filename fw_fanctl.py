@@ -10,11 +10,14 @@ The EC manages the fan autonomously.
 import argparse
 import datetime
 import glob
+import gzip
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -711,12 +714,16 @@ class SensorLogger:
         self.enabled = config.get("enabled", False)
         self.path = config.get("path", "/var/log/fw-fanctl/sensor-log.json")
         self.max_size = config.get("maxSizeMB", 50) * 1024 * 1024
+        self.max_log_files = config.get("maxLogFiles", 100)
         self.flush_interval = config.get("flushIntervalSeconds", 120)
         self._hw = hw
         self._board_sensor_paths = hw.discover_board_sensors() if hw else {}
         self._buffer = []
         self._last_flush = time.monotonic()
         self._flush_failures = 0
+        self._meta_path = os.path.join(os.path.dirname(self.path),
+                                       "sensor-log-meta.json")
+        self._meta_lock = threading.Lock()
 
     def log(self, controller_state=None):
         """Collect all sensor data and append one JSON line.
@@ -778,17 +785,146 @@ class SensorLogger:
                       file=sys.stderr, flush=True)
 
     def _rotate_if_needed(self):
-        """Rotate log file if it exceeds max size."""
+        """Rotate log file if it exceeds max size.
+
+        After rotation: compress to .json.gz in a background thread,
+        update metadata index, and delete oldest files if count exceeds
+        max_log_files.
+        """
         try:
-            if os.path.exists(self.path) and os.path.getsize(self.path) > self.max_size:
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                base, ext = os.path.splitext(self.path)
-                dest = f"{base}.{ts}{ext}"
-                if os.path.exists(dest):
-                    return  # extremely unlikely; skip rotation this cycle
-                os.rename(self.path, dest)
+            if not os.path.exists(self.path) or os.path.getsize(self.path) <= self.max_size:
+                return
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            base, ext = os.path.splitext(self.path)
+            dest = f"{base}.{ts}{ext}"
+            if os.path.exists(dest):
+                return  # extremely unlikely; skip rotation this cycle
+            os.rename(self.path, dest)
+
+            # Read first/last line for metadata timestamps
+            start_ts, end_ts = self._read_boundary_timestamps(dest)
+
+            # Compress in background to avoid blocking the control loop
+            threading.Thread(
+                target=self._compress_and_finalize,
+                args=(dest, start_ts, end_ts),
+                daemon=True,
+                name="fw-fanctl-compress",
+            ).start()
+
         except Exception as e:
             print(f"Sensor log rotation failed: {e}", file=sys.stderr, flush=True)
+
+    def _read_boundary_timestamps(self, filepath):
+        """Read first and last timestamps from a JSONL file."""
+        start_ts = end_ts = None
+        try:
+            with open(filepath, "rb") as f:
+                first_line = f.readline().decode().strip()
+                if first_line:
+                    start_ts = json.loads(first_line).get("timestamp")
+                f.seek(0, 2)
+                end_pos = f.tell()
+                if end_pos > 0:
+                    # Skip trailing newline(s)
+                    pos = end_pos - 1
+                    while pos > 0:
+                        f.seek(pos)
+                        if f.read(1) not in (b"\n", b"\r"):
+                            break
+                        pos -= 1
+                    # Find start of last line
+                    while pos > 0:
+                        f.seek(pos - 1)
+                        if f.read(1) == b"\n":
+                            break
+                        pos -= 1
+                    f.seek(pos)
+                    last_line = f.readline().decode().strip()
+                    if last_line:
+                        end_ts = json.loads(last_line).get("timestamp")
+        except Exception:
+            pass  # metadata will be incomplete but rotation still works
+        return start_ts, end_ts
+
+    def _compress_and_finalize(self, dest, start_ts, end_ts):
+        """Compress a rotated log file and update metadata (runs in background)."""
+        gz_tmp = dest + ".gz.tmp"
+        gz_dest = dest + ".gz"
+        try:
+            with open(dest, "rb") as f_in, gzip.open(gz_tmp, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.rename(gz_tmp, gz_dest)  # atomic — no partial .gz on SIGTERM
+            os.remove(dest)
+            dest = gz_dest
+        except Exception as e:
+            print(f"Sensor log compression failed: {e}",
+                  file=sys.stderr, flush=True)
+            # Clean up partial temp file
+            try:
+                os.remove(gz_tmp)
+            except OSError:
+                pass
+            # Keep uncompressed file — still a valid rotation
+
+        self._update_metadata(os.path.basename(dest), start_ts, end_ts)
+        self._prune_old_logs()
+
+    def _update_metadata(self, filename, start_ts, end_ts):
+        """Append an entry to the metadata index (atomic write)."""
+        with self._meta_lock:
+            try:
+                meta = []
+                if os.path.exists(self._meta_path):
+                    try:
+                        with open(self._meta_path) as f:
+                            meta = json.load(f)
+                    except (json.JSONDecodeError, ValueError):
+                        meta = []  # corrupted — start fresh
+                meta.append({"file": filename, "start": start_ts, "end": end_ts})
+                tmp = self._meta_path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(meta, f)
+                os.rename(tmp, self._meta_path)
+            except Exception as e:
+                print(f"Sensor log metadata update failed: {e}",
+                      file=sys.stderr, flush=True)
+
+    def _prune_old_logs(self):
+        """Delete oldest rotated log files if count exceeds max_log_files."""
+        try:
+            log_dir = os.path.dirname(self.path)
+            rotated = sorted(glob.glob(os.path.join(log_dir, "sensor-log.*.json.gz")))
+            # Also count uncompressed rotated files (pre-compression leftovers)
+            rotated += sorted(glob.glob(os.path.join(log_dir, "sensor-log.*.json")))
+            rotated.sort()  # chronological by timestamp in filename
+            if len(rotated) <= self.max_log_files:
+                return
+            to_delete = rotated[:len(rotated) - self.max_log_files]
+            deleted_names = set()
+            for fpath in to_delete:
+                try:
+                    os.remove(fpath)
+                    deleted_names.add(os.path.basename(fpath))
+                except OSError:
+                    pass
+            # Prune metadata
+            if deleted_names:
+                with self._meta_lock:
+                    try:
+                        if os.path.exists(self._meta_path):
+                            with open(self._meta_path) as f:
+                                meta = json.load(f)
+                            meta = [e for e in meta if e["file"] not in deleted_names]
+                            tmp = self._meta_path + ".tmp"
+                            with open(tmp, "w") as f:
+                                json.dump(meta, f)
+                            os.rename(tmp, self._meta_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Sensor log pruning failed: {e}",
+                  file=sys.stderr, flush=True)
 
 
 def _validate_settings(config):
@@ -919,6 +1055,10 @@ def validate_config(config):
             fi = log["flushIntervalSeconds"]
             if not isinstance(fi, (int, float)) or fi <= 0:
                 raise ValueError("logging.flushIntervalSeconds must be > 0")
+        if "maxLogFiles" in log:
+            ml = log["maxLogFiles"]
+            if not isinstance(ml, int) or ml <= 0:
+                raise ValueError("logging.maxLogFiles must be a positive integer")
 
 
 def preflight_checks(hw):

@@ -132,6 +132,7 @@ EPP values: `performance`, `balance_performance`, `balance_power`, `power`
 | `logging.enabled` | true\* | true/false | Enable JSONL sensor logging (code fallback: false) |
 | `logging.path` | /var/log/fw-fanctl/sensor-log.json | — | Log file path |
 | `logging.maxSizeMB` | 50 | 10–500 MB | Max log file size before rotation |
+| `logging.maxLogFiles` | 100 | 1–1000 | Max rotated log files to keep (excludes active) |
 | `logging.flushIntervalSeconds` | 120 | 10–600 s | Buffer flush interval |
 
 ### Tuning examples
@@ -247,8 +248,14 @@ remaining sections are still logged.
   via `logging.flushIntervalSeconds`; typically ~60 entries per flush, hard cap
   at 1000 entries as a safety limit)
 - When the log file exceeds `logging.maxSizeMB` (default 50MB), it is rotated
-  to `sensor-log.YYYYMMDD_HHMMSS_ffffff.json` (microsecond timestamp) — old
-  rotated files are not automatically deleted
+  to `sensor-log.YYYYMMDD_HHMMSS_ffffff.json.gz` (gzip compressed, ~98%
+  reduction). A metadata index (`sensor-log-meta.json`) tracks the time range
+  of each rotated file for efficient plotting. Files beyond `logging.maxLogFiles`
+  (default 100, not counting the active log file) are automatically deleted
+  oldest-first. Retention depends on entry size and update interval — typically
+  several weeks at default settings (~1MB compressed per file, ~8h per file)
+- The metadata index is safe to delete — it is recreated automatically on the
+  next rotation. `sensor-plot.sh` falls back to loading all files if missing
 - If 3 consecutive flush attempts fail (e.g. disk full), sensor logging is
   automatically disabled for the remainder of the session to avoid repeated
   error noise

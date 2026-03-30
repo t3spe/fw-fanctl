@@ -63,15 +63,49 @@ if [[ -z "$OUTPUT" ]]; then
     OUTPUT="/tmp/sensor-plot-${HOURS}h.png"
 fi
 
-# Collect all sensor log files (rotated + current), sorted by name (oldest first)
+# Collect sensor log files using metadata index for time-based selection.
+# Only loads files whose data overlaps the requested --hours window.
+# Falls back to loading all files if metadata doesn't exist.
+META_FILE="$LOG_DIR/sensor-log-meta.json"
+CUTOFF=$(date -d "-${HOURS} hours" +%Y-%m-%dT%H:%M:%S 2>/dev/null) || CUTOFF=""
+
+declare -A _seen_files
 LOG_FILES=()
-for f in "$LOG_DIR"/sensor-log.*.json; do
-    [[ -f "$f" ]] && LOG_FILES+=("$f")
-done
-[[ -f "$LOG_DIR/sensor-log.json" ]] && LOG_FILES+=("$LOG_DIR/sensor-log.json")
+_add_file() { [[ -f "$1" && -r "$1" && -z "${_seen_files[$1]:-}" ]] && _seen_files[$1]=1 && LOG_FILES+=("$1"); }
+
+if [[ -f "$META_FILE" && -r "$META_FILE" && -n "$CUTOFF" ]]; then
+    # Use metadata for precise file selection (variables passed via argv, not interpolation)
+    while IFS= read -r f; do
+        _add_file "$f"
+    done < <(python3 - "$META_FILE" "$CUTOFF" "$LOG_DIR" << 'METAEOF'
+import json, sys, os
+meta_file, cutoff, log_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(meta_file) as f:
+        meta = json.load(f)
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+for e in meta:
+    end = e.get("end", "")
+    if end >= cutoff or not end:
+        print(os.path.join(log_dir, e["file"]))
+METAEOF
+)
+    # Also include any uncompressed rotated files not in metadata (backwards compat)
+    for f in "$LOG_DIR"/sensor-log.*.json; do
+        _add_file "$f"
+    done
+else
+    # No metadata — load all rotated files
+    for f in "$LOG_DIR"/sensor-log.*.json.gz "$LOG_DIR"/sensor-log.*.json; do
+        _add_file "$f"
+    done
+fi
+# Always include active log
+_add_file "$LOG_DIR/sensor-log.json"
 
 if [[ ${#LOG_FILES[@]} -eq 0 ]]; then
-    echo "Error: no sensor-log*.json files found in $LOG_DIR" >&2
+    echo "Error: no sensor-log files found in $LOG_DIR" >&2
     echo "  Is fw-fanctl running? Check: sudo systemctl status fw-fanctl" >&2
     echo "  Logs need a few minutes to appear (first flush is after 120s)." >&2
     echo "  Use --log-dir to point at a different directory." >&2
@@ -101,7 +135,7 @@ if ! python3 -c "import matplotlib" 2>/dev/null; then
 fi
 
 python3 - "$HOURS" "$OUTPUT" "$ROLLING" "${LOG_FILES[@]}" << 'PYEOF'
-import json, sys, statistics
+import gzip, json, sys, statistics
 from datetime import datetime, timedelta, timezone
 
 hours = float(sys.argv[1])
@@ -165,7 +199,13 @@ idle_ceiling_w = None
 lines_read = 0
 lines_bad = 0
 for log_file in log_files:
-    with open(log_file) as f:
+    opener = gzip.open if log_file.endswith('.gz') else open
+    try:
+        f = opener(log_file, 'rt')
+    except (OSError, gzip.BadGzipFile):
+        lines_bad += 1
+        continue
+    with f:
         for line in f:
             line = line.strip()
             if not line:
