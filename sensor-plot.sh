@@ -71,7 +71,7 @@ CUTOFF=$(date -d "-${HOURS} hours" +%Y-%m-%dT%H:%M:%S 2>/dev/null) || CUTOFF=""
 
 declare -A _seen_files
 LOG_FILES=()
-_add_file() { [[ -f "$1" && -r "$1" && -z "${_seen_files[$1]:-}" ]] && _seen_files[$1]=1 && LOG_FILES+=("$1"); }
+_add_file() { [[ -f "$1" && -r "$1" && -z "${_seen_files[$1]:-}" ]] && _seen_files[$1]=1 && LOG_FILES+=("$1"); return 0; }
 
 if [[ -f "$META_FILE" && -r "$META_FILE" && -n "$CUTOFF" ]]; then
     # Use metadata for precise file selection (variables passed via argv, not interpolation)
@@ -91,8 +91,8 @@ for e in meta:
         print(os.path.join(log_dir, e["file"]))
 METAEOF
 )
-    # Also include any uncompressed rotated files not in metadata (backwards compat)
-    for f in "$LOG_DIR"/sensor-log.*.json; do
+    # Also include rotated files not in metadata (pre-metadata or failed compression)
+    for f in "$LOG_DIR"/sensor-log.*.json.gz "$LOG_DIR"/sensor-log.*.json; do
         _add_file "$f"
     done
 else
